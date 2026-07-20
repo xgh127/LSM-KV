@@ -1,0 +1,28 @@
+# Build dirs
+build/
+build-*/
+out/
+Debug/
+Release/
+
+# IDE / OS clutter
+.vscode/
+.idea/
+.cache/
+*.user
+.DS_Store
+Thumbs.db
+
+# Local data files created by the engine during ad-hoc runs
+lsm_data/
+*.sst
+*.vlog
+*.log
+MANIFEST*
+
+# Tracy captures
+*.tracy
+
+# Logs
+*.tmp
+~$*
