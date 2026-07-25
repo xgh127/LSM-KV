@@ -19,24 +19,25 @@ namespace mini_lsm {
 Status VLog::open(std::filesystem::path path, bool create_if_missing) {
     path_ = path;
 
+    if (!create_if_missing && !std::filesystem::exists(path_)) {
+        return Status::IOError("vlog file does not exist and create_if_missing is false");
+    }
+
     if (create_if_missing) {
         std::error_code ec;
-        std::filesystem::create_directories(path.parent_path(), ec);
+        std::filesystem::create_directories(path_.parent_path(), ec);
         if (ec) {
             return Status::IOError(std::string{"create_directories: "} + ec.message());
         }
     }
 
-    // Open for append-only writes; create file if missing.
     out_.open(path_, std::ios::out | std::ios::binary | std::ios::app);
     if (!out_.is_open()) {
         return Status::IOError("cannot open vlog for writing");
     }
     in_.open(path_, std::ios::in | std::ios::binary);
-    // Reading from an empty/brand-new file is fine; in_ stays not-open until writes happen.
-    std::error_code ec;
+
     next_offset_ = std::filesystem::exists(path_) ? std::filesystem::file_size(path_) : 0;
-    (void)ec;
 
     return Status::OK();
 }

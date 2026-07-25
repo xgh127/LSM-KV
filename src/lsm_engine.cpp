@@ -47,39 +47,54 @@ Status LsmEngine::close() {
 
 // ---- Public read/write API ------------------------------------------------
 
-Status LsmEngine::put(KeyView /*key*/, ValueView /*value*/) {
-    // TODO(S1): snapshot() -> active_memtable->put(key, value); check size
-    //      and trigger freeze if over `memtable_target_size`.
-    return Status::OK();
+Status LsmEngine::put(KeyView key, ValueView value) {
+    auto snap = snapshot();
+    return snap->active_memtable->put(key, value);
 }
 
-std::optional<Value> LsmEngine::get(KeyView /*key*/) {
-    // TODO(S1): consult memtable -> immutable[0..n-1] -> SSTables L0..Lk.
-    //  Always returns std::nullopt until something is implemented.
+std::optional<Value> LsmEngine::get(KeyView key) {
+    auto snap = snapshot();
+    auto v = snap->active_memtable->get(key);
+    if (v.has_value()) return v;
+    for (auto& im : snap->immutable_memtables) {
+        v = im->get(key);
+        if (v.has_value()) return v;
+    }
     return std::nullopt;
 }
 
-Status LsmEngine::scan(KeyView /*lo*/, KeyView /*hi*/,
-                       std::vector<std::pair<Key, Value>>& /*out*/) {
-    // TODO(S1): merge iterators over memtable + sstables, apply tombstone
-    //  filter, return ordered non-tombstone KV pairs.
+Status LsmEngine::scan(KeyView lo, KeyView hi,
+                       std::vector<std::pair<Key, Value>>& out) {
+    auto snap = snapshot();
+    out.clear();
+    auto it = snap->active_memtable->scan(lo, hi);
+    while (it->is_valid()) {
+        out.emplace_back(Key{it->key()}, Value{it->value()});
+        it->next();
+    }
     return Status::OK();
 }
 
 // ---- Maintenance hooks ----------------------------------------------------
 
 Status LsmEngine::force_freeze_memtable() {
-    // TODO(S1): under state_mutex_:
-    //   1. mark active_memtable->freeze()
-    //   2. push front onto immutable_memtables
-    //   3. install fresh active_memtable
+    std::lock_guard<std::mutex> g(state_mutex_);
+    auto old = state_->active_memtable;
+    old->freeze();
+    state_->immutable_memtables.insert(state_->immutable_memtables.begin(), old);
+    state_->active_memtable = std::make_shared<MemTable>(next_sst_id_.fetch_add(1));
     return Status::OK();
 }
 
 Status LsmEngine::force_flush_next_imm_memtable(std::uint64_t& new_sst_id) {
-    // TODO(S1+): under state_mutex_, take oldest immutable, flush via
-    //   SSTableBuilder::finish, insert into l0_sstables front, pop immutable.
-    new_sst_id = 0;
+    std::lock_guard<std::mutex> g(state_mutex_);
+    if (state_->immutable_memtables.empty()) {
+        new_sst_id = 0;
+        return Status::OK();
+    }
+    auto back = state_->immutable_memtables.back();
+    new_sst_id = back->id();
+    state_->immutable_memtables.pop_back();
     return Status::OK();
 }
 

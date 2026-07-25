@@ -169,6 +169,57 @@ TEST(LsmEngine, ForceFlushPopsImmutable) {
     EXPECT_EQ(e.snapshot()->immutable_memtables.size(), std::size_t{0});
 }
 
+// ---- S0 acceptance test (full lifecycle) ----------------------------------
+// 端到端验收：覆盖 put/get/del/freeze/flush/reset/close 完整流程。
+TEST(LsmEngine, S0EndToEndAcceptance) {
+    auto o = opts_with_temp_dir("S0EndToEndAcceptance");
+    LsmEngine e(o);
+    EXPECT_TRUE(e.open().ok());
+
+    // 写入 3 个 key
+    e.put("a", "1");
+    e.put("b", "2");
+    e.put("c", "3");
+
+    // 全部读回
+    EXPECT_EQ(*e.get("a"), "1");
+    EXPECT_EQ(*e.get("b"), "2");
+    EXPECT_EQ(*e.get("c"), "3");
+
+    // 删除 "a"
+    e.del("a");
+    EXPECT_FALSE(e.get("a").has_value());
+    EXPECT_TRUE(e.get("b").has_value());
+
+    // 范围扫描
+    std::vector<std::pair<Key, Value>> out;
+    e.scan("a", "z", out);
+    EXPECT_EQ(out.size(), 2u);   // "a" 被删除，只剩 "b", "c"
+    if (out.size() == 2) {
+        EXPECT_EQ(out[0].first, "b");
+        EXPECT_EQ(out[1].first, "c");
+    }
+
+    // freeze → immutable 多了一个
+    EXPECT_EQ(e.snapshot()->immutable_memtables.size(), 0u);
+    EXPECT_TRUE(e.force_freeze_memtable().ok());
+    EXPECT_EQ(e.snapshot()->immutable_memtables.size(), 1u);
+
+    // flush → 弹出 immutable，返回 sst_id
+    std::uint64_t sst_id = 0;
+    EXPECT_TRUE(e.force_flush_next_imm_memtable(sst_id).ok());
+    EXPECT_GT(sst_id, 0u);
+    EXPECT_EQ(e.snapshot()->immutable_memtables.size(), 0u);
+
+    // reset → 数据全部清除
+    e.reset();
+    EXPECT_FALSE(e.get("b").has_value());
+
+    // close → 幂等
+    EXPECT_TRUE(e.close().ok());
+    EXPECT_TRUE(e.close().ok());
+}
+
 // ---- Background thread lifecycle ------------------------------------------
 TEST(LsmEngine, StartStopFlushThreadIdempotent) {
     auto o = opts_with_temp_dir("StartStopFlushThreadIdempotent");
