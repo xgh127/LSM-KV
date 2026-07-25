@@ -71,14 +71,8 @@ inline thread_local bool g_should_abort_current = false;
 
 inline void RecordFailure(std::string file, int line, std::string expr,
                           std::string details, bool fatal) {
-    Failure fl{std::move(file), line, std::move(expr), std::move(details), fatal};
-    std::fprintf(stderr, "[  FAILED  ] %s:%d: %s\n",
-                 fl.file.c_str(), fl.line,
-                 fl.expr.empty() ? "(unconditional failure)" : fl.expr.c_str());
-    if (!fl.details.empty()) {
-        std::fprintf(stderr, "            %s\n", fl.details.c_str());
-    }
-    CurrentFailures().push_back(std::move(fl));
+    CurrentFailures().push_back({std::move(file), line, std::move(expr),
+                                 std::move(details), fatal});
     if (fatal) {
         g_should_abort_current = true;
         throw std::runtime_error("mini_test: abort current test");
@@ -88,19 +82,13 @@ inline void RecordFailure(std::string file, int line, std::string expr,
 inline void ClearCurrentFailures() { CurrentFailures().clear(); }
 inline bool HadFailures()           { return !CurrentFailures().empty(); }
 
-// Print a pretty two-line "expected vs actual" -------------------------------
-inline void PrintExpectedVsActual(std::string_view file, int line,
-                                  std::string_view expr,
-                                  std::string_view expected,
-                                  std::string_view actual) {
-    std::fprintf(stderr, "[  FAILED  ] %.*s:%d: %.*s\n",
-                 static_cast<int>(file.size()),   file.data(),
-                 line,
-                 static_cast<int>(expr.size()),   expr.data());
-    std::fprintf(stderr, "            Expected: %.*s\n",
-                 static_cast<int>(expected.size()), expected.data());
-    std::fprintf(stderr, "            Actual:   %.*s\n",
-                 static_cast<int>(actual.size()),   actual.data());
+inline void PrintFailures() {
+    for (auto& f : CurrentFailures()) {
+        if (!f.expr.empty())
+            std::printf("           %s\n", f.expr.c_str());
+        if (!f.details.empty())
+            std::printf("           %s\n", f.details.c_str());
+    }
 }
 
 // Type printers (extend on demand) -----------------------------------------
@@ -112,6 +100,41 @@ inline std::string ToStr(std::nullptr_t)         { return "<nullptr>"; }
 inline std::string ToStr(bool b)                 { return b ? "true" : "false"; }
 inline std::string ToStr(std::string_view s)    { return std::string(s); }
 inline std::string ToStr(const std::string& s)  { return s; }
+
+// Runner ------------------------------------------------------------------
+inline int RunAllTests() {
+    std::printf("[==========] %zu test(s) registered\n",
+                Registry().size());
+
+    int passed = 0, failed = 0;
+
+    for (const auto& e : Registry()) {
+        ClearCurrentFailures();
+        g_should_abort_current = false;
+
+        try {
+            e.body();
+        } catch (const std::exception& ex) {
+            RecordFailure(__FILE__, __LINE__,
+                "uncaught std::exception", ex.what(), false);
+        } catch (...) {
+            RecordFailure(__FILE__, __LINE__,
+                "uncaught unknown exception", "", false);
+        }
+
+        if (HadFailures()) {
+            ++failed;
+            std::printf("[  FAILED  ] %s.%s\n", e.suite, e.name);
+            PrintFailures();
+        } else {
+            ++passed;
+            std::printf("[       OK ] %s.%s\n", e.suite, e.name);
+        }
+    }
+
+    std::printf("[==========] %d passed, %d failed\n", passed, failed);
+    return failed == 0 ? 0 : 1;
+}
 
 // Equality helpers ----------------------------------------------------------
 template <class A, class B>

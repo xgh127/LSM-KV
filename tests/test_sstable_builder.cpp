@@ -19,10 +19,10 @@ TEST(SSTableBuilder, EmptyBuilderIsEmpty) {
     EXPECT_EQ(b.estimated_size_bytes(), std::size_t{0});
 }
 
-TEST(SSTableBuilder, AddReturnsFalseInS0) {
+TEST(SSTableBuilder, AddAcceptsAscending) {
     SSTableBuilder b(4096, /*bloom=*/true);
-    // S0: add() always returns false. S1: returns true on ascending input.
-    EXPECT_FALSE(b.add("k1", "v1"));
+    EXPECT_TRUE(b.add("k1", "v1"));
+    EXPECT_TRUE(b.add("k2", "v2"));
 }
 
 TEST(SSTableBuilder, FinishReturnsNotSupportedInS0) {

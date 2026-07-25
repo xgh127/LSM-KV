@@ -43,19 +43,7 @@ public:
     // Returns the id assigned at construction (used to name SST files / WAL).
     std::uint64_t id() const { return id_; }
 
-    // ---------------------------------------------------------------------
-    // Insert / update a key-value pair.
-    //   * Key bytes are arbitrary binary; empty value == tombstone.
-    //   * This call must be safe to invoke while a snapshot of an older
-    //     MemTable is being flushed concurrently, but only on the *current*
-    //     active memtable. Immutable/frozen memtables must reject writes.
-    // Returns:
-    //   Status::OK                 on success
-    //   Status::InvalidArgument     on implementation-specific bad input
-    // Implementation suggestion (S0):
-    //   `map_[key] = value; size_.fetch_add(key.size() + value.size());`
-    //   The returned Status is basically always OK for the std::map starter.
-    // ---------------------------------------------------------------------
+   
     Status put(KeyView key, ValueView value);
 
     // Single-key lookup. Returns:
@@ -95,9 +83,9 @@ public:
     bool is_frozen() const { return frozen_; }
 
 private:
-    std::uint64_t                         id_;
+    std::uint64_t                         id_;          
     std::map<Key, Value, std::less<>>     map_;       // transparent comparator (C++20)
-    std::atomic<std::size_t>             size_{0};
+    std::atomic<std::size_t>             size_{0};    //为了线程安全，将size_声明为std::atomic<std::size_t>，即原子变量
     bool                                 frozen_ = false;
 };
 

@@ -1,8 +1,13 @@
 // test_memtable.cpp
 // -----------------------------------------------------------------------------
-// MemTable TDD red-stage tests. Until src/memtable.cpp is implemented, every
-// non-trivial assertion here should fail — but the binary must not crash.
-// Once the bodies are filled in (Stage S1), all tests go green.
+// MemTable TDD tests — grouped by function.
+// Check off each group as you implement the corresponding method:
+//
+//   [ ] Put  ─── PutBasic, PutOverwrite, PutThenGetSize
+//   [ ] Get  ─── GetExisting, GetMissing, GetAfterDelete, GetTombstoneVsMissing
+//   [ ] Scan ─── ScanOrdered, ScanLowerBound, ScanUpperBound, ScanSkipsTombstone
+//   [ ] FlushTo ── FlushToBuilder
+//   [ ] Misc  ─── Freeze
 // -----------------------------------------------------------------------------
 #include "mini_test.hpp"
 #include "memtable.h"
@@ -11,158 +16,231 @@
 using namespace mini_lsm;
 
 namespace {
-// A trivial fixture-style helper: builds a fresh MemTable with a fixed id.
 std::shared_ptr<MemTable> make_mt(std::uint64_t id = 1) {
     return std::make_shared<MemTable>(id);
 }
 } // anonymous
 
-// ---- Basic put/get round-trip ----------------------------------------------
-TEST(MemTable, PutGetRoundTrip) {
+// ============================================================================
+// Put
+// ============================================================================
+
+TEST(MemTable, PutBasic) {
     auto m = make_mt();
-    EXPECT_TRUE(m->put("k1", "v1").ok());
-    auto got = m->get("k1");
-    ASSERT_TRUE(got.has_value());
-    EXPECT_EQ(got.value(), std::string("v1"));
+    EXPECT_TRUE(m->put("k", "v").ok());
 }
 
-TEST(MemTable, OverwriteLatestValueWins) {
+TEST(MemTable, PutThenGet) {
+    auto m = make_mt();
+    EXPECT_TRUE(m->put("k", "v").ok());
+    auto got = m->get("k");
+    ASSERT_TRUE(got.has_value());
+    EXPECT_EQ(*got, "v");
+}
+
+TEST(MemTable, PutOverwrite) {
     auto m = make_mt();
     m->put("k", "old");
     m->put("k", "new");
     auto got = m->get("k");
     ASSERT_TRUE(got.has_value());
-    EXPECT_EQ(got.value(), std::string("new"));
+    EXPECT_EQ(*got, "new");
 }
 
-// ---- Tombstone -------------------------------------------------------------
-TEST(MemTable, DeleteReturnsNullopt) {
+TEST(MemTable, PutMultipleKeys) {
+    auto m = make_mt();
+    EXPECT_TRUE(m->put("a", "1").ok());
+    EXPECT_TRUE(m->put("b", "2").ok());
+    EXPECT_TRUE(m->put("c", "3").ok());
+    auto ga = m->get("a"); ASSERT_TRUE(ga.has_value()); EXPECT_EQ(*ga, "1");
+    auto gb = m->get("b"); ASSERT_TRUE(gb.has_value()); EXPECT_EQ(*gb, "2");
+    auto gc = m->get("c"); ASSERT_TRUE(gc.has_value()); EXPECT_EQ(*gc, "3");
+}
+
+TEST(MemTable, PutSizeIncreases) {
+    auto m = make_mt();
+    auto before = m->approximate_size();
+    m->put("k", "hello");
+    EXPECT_GT(m->approximate_size(), before);
+}
+
+TEST(MemTable, PutSizeTracksOverwrite) {
+    auto m = make_mt();
+    m->put("k", "aaaaa");
+    auto after_short = m->approximate_size();
+    m->put("k", "bbbbbbbbbb");
+    auto after_long = m->approximate_size();
+    EXPECT_GT(after_long, after_short);
+}
+
+TEST(MemTable, PutSizeTracksDelete) {
+    auto m = make_mt();
+    m->put("k", "aaaaa");
+    auto with_data = m->approximate_size();
+    m->del("k");
+    auto after_del = m->approximate_size();
+    EXPECT_LT(after_del, with_data);
+}
+
+// ============================================================================
+// Get
+// ============================================================================
+
+TEST(MemTable, GetExisting) {
     auto m = make_mt();
     m->put("k", "v");
-    EXPECT_TRUE(m->del("k").ok());
     auto got = m->get("k");
-    EXPECT_FALSE(got.has_value());
+    ASSERT_TRUE(got.has_value());
+    EXPECT_EQ(*got, "v");
 }
 
-TEST(MemTable, ExplicitEmptyValueIsTombstone) {
-    auto m = make_mt();
-    m->put("k", "");
-    auto got = m->get("k");
-    EXPECT_FALSE(got.has_value());
-}
-
-// ---- Edge cases ------------------------------------------------------------
-TEST(MemTable, GetMissingKey) {
+TEST(MemTable, GetMissing) {
     auto m = make_mt();
     auto got = m->get("not-there");
     EXPECT_FALSE(got.has_value());
 }
 
-TEST(MemTable, EmptyValueAndMissingKeyAreBothNulloptButDistinctInternally) {
+TEST(MemTable, GetAfterDelete) {
     auto m = make_mt();
-    m->put("absent", "");
-    EXPECT_FALSE(m->get("absent").has_value());      // tombstone present
-    EXPECT_FALSE(m->get("never").has_value());      // no entry at all
-    // We can't directly probe the internal map from here, but a del followed
-    // by put("absent", "real") should make it reappear — the engine's filter
-    // layer must distinguish the two states per read.
+    m->put("k", "v");
+    m->del("k");
+    EXPECT_FALSE(m->get("k").has_value());
+}
+
+TEST(MemTable, GetTombstoneVsMissing) {
+    auto m = make_mt();
+    m->put("absent", "");           // tombstone: empty value
+    EXPECT_FALSE(m->get("absent").has_value());   // both return nullopt
+    EXPECT_FALSE(m->get("never").has_value());
+    // but tombstone can be resurrected by a new put
     m->put("absent", "real");
     auto got = m->get("absent");
     ASSERT_TRUE(got.has_value());
-    EXPECT_EQ(got.value(), std::string("real"));
+    EXPECT_EQ(*got, "real");
 }
 
-// ---- Capacity & freeze -----------------------------------------------------
-TEST(MemTable, ApproximateSizeIncreases) {
+TEST(MemTable, GetExplicitTombstone) {
     auto m = make_mt();
-    auto s0 = m->approximate_size();
-    m->put("a", "12345");
-    auto s1 = m->approximate_size();
-    EXPECT_GT(s1, s0);
+    m->put("k", "");
+    EXPECT_FALSE(m->get("k").has_value());
 }
 
-TEST(MemTable, FreezeReplacesActive) {
-    // Implementation hint: after freeze(), the engine creates a new memtable
-    // and pushes this one onto immutables. We test only the freeze flag here.
-    auto m = make_mt();
-    EXPECT_FALSE(m->is_frozen());
-    m->freeze();
-    EXPECT_TRUE(m->is_frozen());
-}
+// ============================================================================
+// Scan
+// ============================================================================
 
-// ---- Scan ordering ---------------------------------------------------------
-TEST(MemTable, ScanReturnsSortedIter) {
+TEST(MemTable, ScanOrdered) {
     auto m = make_mt();
     m->put("c", "1");
     m->put("a", "2");
     m->put("b", "3");
-    auto it = m->scan("a", "z");   // [a, z) — all three keys
-    ASSERT_TRUE(it != nullptr);
+    auto it = m->scan("a", "z");
+    EXPECT_TRUE(it != nullptr);
 
-    // Walk the iterator, accumulate keys; expect sorted ascending.
     std::vector<Key> keys;
     while (it->is_valid()) {
-        keys.emplace_back(std::string{it->key()});
+        keys.push_back(Key{it->key()});
         it->next();
     }
-    EXPECT_EQ(keys.size(), std::size_t{3});
-    ASSERT_EQ(keys.size(), std::size_t{3});                  // continue only if 3
-    EXPECT_EQ(keys[0], std::string("a"));
-    EXPECT_EQ(keys[1], std::string("b"));
-    EXPECT_EQ(keys[2], std::string("c"));
+    EXPECT_EQ(keys.size(), 3u);
+    if (keys.size() == 3) {
+        EXPECT_EQ(keys[0], "a");
+        EXPECT_EQ(keys[1], "b");
+        EXPECT_EQ(keys[2], "c");
+    }
 }
 
-TEST(MemTable, ScanRespectsLowerBound) {
+TEST(MemTable, ScanLowerBound) {
     auto m = make_mt();
     m->put("a", "1");
     m->put("b", "2");
     m->put("c", "3");
     auto it = m->scan("b", "z");
-    ASSERT_TRUE(it != nullptr);
-    if (it->is_valid()) {
-        EXPECT_EQ(std::string{it->key()}, std::string("b"));
-    }
+    EXPECT_TRUE(it != nullptr);
+    ASSERT_TRUE(it->is_valid());
+    EXPECT_EQ(Key{it->key()}, "b");
 }
 
-TEST(MemTable, ScanRespectsUpperBound) {
+TEST(MemTable, ScanUpperBound) {
     auto m = make_mt();
     m->put("a", "1");
     m->put("b", "2");
     m->put("c", "3");
-    auto it = m->scan("a", "b");    // [a, b) — should yield only "a"
-    ASSERT_TRUE(it != nullptr);
+    auto it = m->scan("a", "b");
+    EXPECT_TRUE(it != nullptr);
     std::vector<Key> keys;
     while (it->is_valid()) {
-        keys.emplace_back(std::string{it->key()});
+        keys.push_back(Key{it->key()});
         it->next();
     }
-    EXPECT_EQ(keys.size(), std::size_t{1});
+    EXPECT_EQ(keys.size(), 1u);
+    if (keys.size() == 1) {
+        EXPECT_EQ(keys[0], "a");
+    }
 }
 
-TEST(MemTable, ScanFiltersTombstones) {
+TEST(MemTable, ScanSkipsTombstone) {
     auto m = make_mt();
     m->put("a", "1");
-    m->del("b");                    // tombstone at "b"
+    m->del("b");
     m->put("c", "3");
     auto it = m->scan("a", "z");
-    ASSERT_TRUE(it != nullptr);
+    EXPECT_TRUE(it != nullptr);
     std::vector<Key> keys;
     while (it->is_valid()) {
-        keys.emplace_back(std::string{it->key()});
+        keys.push_back(Key{it->key()});
         it->next();
     }
-    EXPECT_EQ(keys.size(), std::size_t{2});   // "a" + "c", "b" filtered
+    EXPECT_EQ(keys.size(), 2u);
     if (keys.size() == 2) {
-        EXPECT_EQ(keys[0], std::string("a"));
-        EXPECT_EQ(keys[1], std::string("c"));
+        EXPECT_EQ(keys[0], "a");
+        EXPECT_EQ(keys[1], "c");
     }
 }
 
-// ---- flush_to(SSTableBuilder) form check ----------------------------------
-TEST(MemTable, FlushToBuilderAcceptsSortedEntries) {
+TEST(MemTable, ScanEmptyRange) {
+    auto m = make_mt();
+    m->put("a", "1");
+    auto it = m->scan("z", "zz");
+    EXPECT_TRUE(it != nullptr);
+    EXPECT_FALSE(it->is_valid());
+}
+
+TEST(MemTable, ScanEmptyMemtable) {
+    auto m = make_mt();
+    auto it = m->scan("a", "z");
+    EXPECT_TRUE(it != nullptr);
+    EXPECT_FALSE(it->is_valid());
+}
+
+TEST(MemTable, ScanAtExactBound) {
     auto m = make_mt();
     m->put("a", "1");
     m->put("b", "2");
-    SSTableBuilder b(/*block_size=*/1024, /*bloom=*/true);
+    auto it = m->scan("b", "b");
+    EXPECT_TRUE(it != nullptr);
+    EXPECT_FALSE(it->is_valid());
+}
+
+// ============================================================================
+// FlushTo
+// ============================================================================
+
+TEST(MemTable, FlushToBuilder) {
+    auto m = make_mt();
+    m->put("a", "1");
+    m->put("b", "2");
+    SSTableBuilder b(1024, true);
     EXPECT_TRUE(m->flush_to(b).ok());
+}
+
+// ============================================================================
+// Freeze
+// ============================================================================
+
+TEST(MemTable, Freeze) {
+    auto m = make_mt();
+    EXPECT_FALSE(m->is_frozen());
+    m->freeze();
+    EXPECT_TRUE(m->is_frozen());
 }
