@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-ubuntu:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: LSM-KV
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: sudo apt-get update && sudo apt-get install -y cmake g++
+
+    - name: Configure
+      run: cmake -B build -G "Unix Makefiles" -DCMAKE_CXX_COMPILER=g++
+
+    - name: Build
+      run: cmake --build build
+
+    - name: Test
+      run: ctest --test-dir build --output-on-failure
+
+    - name: Package static library
+      run: |
+        mkdir -p artifacts
+        cp build/libmini_lsm.a artifacts/
+        cp build/tests/test_memtable.exe artifacts/ 2>/dev/null || true
+        cp build/tests/test_sstable.exe artifacts/ 2>/dev/null || true
+        cp build/tests/test_sstable_builder.exe artifacts/ 2>/dev/null || true
+        cp build/tests/test_vlog.exe artifacts/ 2>/dev/null || true
+        cp build/tests/test_iterator.exe artifacts/ 2>/dev/null || true
+        cp build/tests/test_compaction.exe artifacts/ 2>/dev/null || true
+        cp build/tests/test_lsm_engine.exe artifacts/ 2>/dev/null || true
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: lsm-kv-ubuntu-${{ github.ref_name }}
+        path: LSM-KV/artifacts/
+
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: LSM-KV
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure
+      run: cmake -B build -G "MinGW Makefiles" -DCMAKE_CXX_COMPILER=g++
+
+    - name: Build
+      run: cmake --build build
+
+    - name: Test
+      run: ctest --test-dir build --output-on-failure
+
+    - name: Package
+      run: |
+        New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+        Copy-Item build/libmini_lsm.a artifacts/
+        Get-ChildItem build/tests/*.exe | Copy-Item -Destination artifacts/
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: lsm-kv-windows-${{ github.ref_name }}
+        path: LSM-KV/artifacts/
+
+  release:
+    needs: [build-ubuntu, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: lsm-kv-ubuntu-${{ github.ref_name }}
+        path: artifacts/ubuntu
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: lsm-kv-windows-${{ github.ref_name }}
+        path: artifacts/windows
+
+    - name: Create release tarball
+      run: |
+        cd artifacts
+        tar czf ../lsm-kv-${{ github.ref_name }}-ubuntu.tar.gz ubuntu/
+        zip -r ../lsm-kv-${{ github.ref_name }}-windows.zip windows/
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          lsm-kv-${{ github.ref_name }}-ubuntu.tar.gz
+          lsm-kv-${{ github.ref_name }}-windows.zip
+        generate_release_notes: true
