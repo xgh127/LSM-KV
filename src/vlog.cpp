@@ -1,20 +1,36 @@
-// vlog.cpp
-// -----------------------------------------------------------------------------
-// S0 stub of VLog. Tests use it to assert:
-//   * open(path, create_if_missing=true) creates parent dirs and the vlog file
-//   * append_to_tail owns an O_APPEND handle so offsets are monotonic
-//   * read_at(offset, len) round-trips the same bytes that were appended
-//   * gc(chunk_size) is callable and returns Status::OK even as a no-op
-//
-// Implementation suggestion (S0 root): std::ofstream ios::app + binary;
-// for read-back open std::ifstream lazily on first read (kept open here for
-// simplicity). Maintain in-memory `next_offset_` counter.
-// -----------------------------------------------------------------------------
 #include "vlog.h"
 
+#include <cstring>
 #include <filesystem>
 
 namespace mini_lsm {
+
+namespace {
+
+void write_u16le(std::string& buf, std::uint16_t v) {
+    buf.push_back(static_cast<char>(v & 0xFF));
+    buf.push_back(static_cast<char>((v >> 8) & 0xFF));
+}
+
+void write_u32le(std::string& buf, std::uint32_t v) {
+    buf.push_back(static_cast<char>(v & 0xFF));
+    buf.push_back(static_cast<char>((v >> 8) & 0xFF));
+    buf.push_back(static_cast<char>((v >> 16) & 0xFF));
+    buf.push_back(static_cast<char>((v >> 24) & 0xFF));
+}
+
+std::uint32_t crc32_checksum(std::string_view data) {
+    uint32_t crc = 0xFFFFFFFFu;
+    for (auto c : data) {
+        crc ^= static_cast<unsigned char>(c);
+        for (int j = 0; j < 8; ++j) {
+            crc = (crc >> 1) ^ (crc & 1 ? 0xEDB88320u : 0);
+        }
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+
+} // anonymous namespace
 
 Status VLog::open(std::filesystem::path path, bool create_if_missing) {
     path_ = path;
@@ -42,20 +58,93 @@ Status VLog::open(std::filesystem::path path, bool create_if_missing) {
     return Status::OK();
 }
 
-Status VLog::append(KeyView /*key*/, ValueView /*value*/, VLogHandle& /*out*/) {
-    // TODO(S1): write a header [magic|key_len|key|val_len] << value << crc32;
-    // record out.offset = next_offset_; advance next_offset_ by total written.
-    // S0: leave as no-op.
+Status VLog::append(KeyView key, ValueView value, VLogHandle& out) {
+    // Format: magic(1) + key_len(2) + key + value_len(4) + value + crc32(4)
+    std::uint16_t klen = static_cast<std::uint16_t>(key.size());
+    std::uint32_t vlen = static_cast<std::uint32_t>(value.size());
+    std::uint32_t total = 1 + 2 + klen + 4 + vlen + 4;
+
+    auto offset = next_offset_;
+    next_offset_ += total;
+
+    std::string buf;
+    buf.reserve(total);
+    buf.push_back(static_cast<char>(0xFA));
+    write_u16le(buf, klen);
+    buf.append(key.data(), klen);
+    write_u32le(buf, vlen);
+    buf.append(value.data(), vlen);
+    auto crc = crc32_checksum(std::string_view{buf.data() + 1, static_cast<std::size_t>(total - 5)});
+    write_u32le(buf, crc);
+
+    out_.write(buf.data(), static_cast<std::streamsize>(buf.size()));
+    out_.flush();
+
+    out.offset = offset;
+    out.length = total;
     return Status::OK();
 }
 
-Status VLog::read_at(VLogHandle /*h*/, std::string& /*out*/) const {
-    // TODO(S1): in_.seekg(h.offset); read(h.length); verify CRC.
-    return Status::NotSupported("VLog::read_at is a S1 TODO");
+Status VLog::read_at(VLogHandle h, std::string& out) const {
+    if (h.length < 7) {
+        return Status::IOError("invalid handle: too small");
+    }
+    std::string buf(h.length, '\0');
+    in_.seekg(static_cast<std::streamoff>(h.offset), std::ios::beg);
+    if (!in_) {
+        return Status::IOError("seekg failed at offset " + std::to_string(h.offset));
+    }
+    in_.read(buf.data(), static_cast<std::streamsize>(h.length));
+    if (!in_) {
+        return Status::IOError("short read at offset " + std::to_string(h.offset));
+    }
+
+    // Verify magic
+    if (static_cast<unsigned char>(buf[0]) != 0xFA) {
+        return Status::IOError("bad vlog magic");
+    }
+
+    // Parse header
+    auto klen = static_cast<std::uint16_t>(
+        static_cast<unsigned char>(buf[1]) |
+        (static_cast<unsigned char>(buf[2]) << 8));
+
+    if (static_cast<std::size_t>(1 + 2 + klen + 4) > h.length) {
+        return Status::IOError("vlog record truncated");
+    }
+
+    auto vlen = static_cast<std::uint32_t>(
+        static_cast<unsigned char>(buf[3 + klen]) |
+        (static_cast<unsigned char>(buf[4 + klen]) << 8) |
+        (static_cast<unsigned char>(buf[5 + klen]) << 16) |
+        (static_cast<unsigned char>(buf[6 + klen]) << 24));
+
+    if (static_cast<std::size_t>(1 + 2 + klen + 4 + vlen + 4) > h.length) {
+        return Status::IOError("vlog value truncated");
+    }
+
+    // Verify CRC
+    auto data_start = 1;
+    auto data_len = static_cast<std::size_t>(2 + klen + 4 + vlen);
+    auto stored_crc = static_cast<std::uint32_t>(
+        static_cast<unsigned char>(buf[1 + 2 + klen + 4 + vlen]) |
+        (static_cast<unsigned char>(buf[2 + 2 + klen + 4 + vlen]) << 8) |
+        (static_cast<unsigned char>(buf[3 + 2 + klen + 4 + vlen]) << 16) |
+        (static_cast<unsigned char>(buf[4 + 2 + klen + 4 + vlen]) << 24));
+
+    auto computed = crc32_checksum(
+        std::string_view{buf.data() + data_start, data_len});
+    if (computed != stored_crc) {
+        return Status::IOError("vlog CRC mismatch");
+    }
+
+    // Extract value
+    auto value_start = static_cast<std::size_t>(1 + 2 + klen + 4);
+    out = buf.substr(value_start, vlen);
+    return Status::OK();
 }
 
 Status VLog::gc(std::uint64_t /*chunk_size*/, std::uint64_t& reclaimed) {
-    // TODO(S2+): WiscKey GC. S0 no-op.
     reclaimed = 0;
     return Status::OK();
 }

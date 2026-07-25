@@ -12,9 +12,10 @@
 
 using namespace mini_lsm;
 
-TEST(SSTable, MayContainAlwaysTrueByDefault) {
+TEST(SSTable, MayContainReturnsFalseOnEmptyMetas) {
+    // S1: empty metas → no blocks → cannot contain anything.
     auto t = std::make_unique<SSTable>(/*id=*/1, std::filesystem::path{"nonexistent.sst"});
-    EXPECT_TRUE(t->may_contain("anything"));
+    EXPECT_FALSE(t->may_contain("anything"));
 }
 
 TEST(SSTable, FindBlockIdxOnEmptyReturnsZero) {

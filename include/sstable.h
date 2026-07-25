@@ -89,10 +89,13 @@ public:
     static constexpr std::uint64_t kMagic = 0x6d696e694c534du; // "MSLinim"
 
 private:
+    friend class SSTableBuilder;    // for finish() to set block_data_end_
+
     std::uint64_t                         id_;
     std::filesystem::path                path_;
     std::vector<BlockMeta>               block_metas_;
-    std::vector<unsigned char>           bloom_;           // optional, empty if disabled
+    std::vector<unsigned char>           bloom_;
+    std::uint64_t                         block_data_end_ = 0; // offset where meta starts
 };
 
 // ---------------------------------------------------------------------------
@@ -107,19 +110,14 @@ public:
     ValueView    value() const override;
     Status       next()  override;
 
-    // Position the iterator at the first entry with key >= target.
-    // Implementation suggestion (S1):
-    //   1. find_block_idx(target)
-    //   2. read_block(idx)
-    //   3. block-level seek_to_key (linear scan is fine for S0/S1; binary for S4)
     void seek_to_key(KeyView target);
-
-    // Position at the very first entry of the table.
     void seek_to_first();
 
 private:
+    Status load_current_block();
+
     std::shared_ptr<const SSTable>  table_;
-    std::string                     current_block_bytes_;
+    std::vector<std::pair<Key, Value>> current_block_entries_;
     std::uint32_t                   current_block_idx_ = 0;
     std::uint32_t                   entry_cursor_      = 0;
     bool                            valid_             = false;

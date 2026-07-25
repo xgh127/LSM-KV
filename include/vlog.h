@@ -87,7 +87,7 @@ public:
 private:
     std::filesystem::path path_;
     std::ofstream          out_;
-    std::ifstream          in_;
+    mutable std::ifstream  in_;
     std::uint64_t          next_offset_ = 0;
 };
 

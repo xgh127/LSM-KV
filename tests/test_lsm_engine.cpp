@@ -220,6 +220,33 @@ TEST(LsmEngine, S0EndToEndAcceptance) {
     EXPECT_TRUE(e.close().ok());
 }
 
+// ---- S1 integration: flush writes SST, get reads from SST -----------------
+TEST(LsmEngine, FlushPersistsThenGetReadsFromSst) {
+    auto o = opts_with_temp_dir("FlushPersistsThenGetReadsFromSst");
+    LsmEngine e(o);
+    e.open();
+    e.put("a", "1");
+    e.put("b", "2");
+
+    // freeze + flush → data lands in L0 SSTable
+    EXPECT_TRUE(e.force_freeze_memtable().ok());
+    std::uint64_t sst_id = 0;
+    EXPECT_TRUE(e.force_flush_next_imm_memtable(sst_id).ok());
+    EXPECT_GT(sst_id, 0u);
+    auto snap = e.snapshot();
+    EXPECT_EQ(snap->l0_sstables.size(), std::size_t{1});
+    EXPECT_EQ(snap->l0_sstables[0], sst_id);
+
+    // get should read from SSTable now (memtable is empty)
+    EXPECT_EQ(*e.get("a"), "1");
+    EXPECT_EQ(*e.get("b"), "2");
+    EXPECT_FALSE(e.get("c").has_value());
+
+    // Verify .sst file exists on disk
+    auto sst_path = o.base_dir / (std::to_string(sst_id) + ".sst");
+    EXPECT_TRUE(std::filesystem::exists(sst_path));
+}
+
 // ---- Background thread lifecycle ------------------------------------------
 TEST(LsmEngine, StartStopFlushThreadIdempotent) {
     auto o = opts_with_temp_dir("StartStopFlushThreadIdempotent");

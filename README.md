@@ -58,13 +58,13 @@ ctest --test-dir build --output-on-failure -R lsm_engine
 | 组件 | 接口 | 测试数 | 说明 |
 |---|---|---|---|
 | MemTable | `put/get/del/scan/flush_to` | 21 | 内存写入缓冲区 |
-| SSTableBuilder | `add/finish` | 5 | SSTable 构建器 |
-| SSTable | `open/may_contain/find_block_idx` | 5 | SSTable 读取（S1） |
-| VLog | `open/append/read_at/gc` | 6 | 值日志（S1） |
+| SSTableBuilder | `add/finish` | 6 | SSTable 构建器，`finish` 写入真实文件 |
+| SSTable | `open/may_contain/find_block_idx/read_block` | 5 | SSTable 读取，`open` 解析 footer+meta |
+| VLog | `open/append/read_at/gc` | 7 | 值日志，`append`/`read_at` 真实 CRC 校验 |
 | Iterator | `is_valid/key/value/next` | 3 | 迭代器抽象 |
 | Compaction | `plan/execute` | 4 | 压缩调度（S2） |
-| LsmEngine | `put/get/del/scan/freeze/flush/reset` | 14 | 引擎入口 |
-| **总计** | | **58** | |
+| LsmEngine | `put/get/del/scan/freeze/flush/reset` | 15 | 引擎入口，`flush` 写入真实 SST，`get` 从 SST 读取 |
+| **总计** | | **61** | **100% passed, 0 failed** |
 
 ### 日常开发流程
 
@@ -128,27 +128,29 @@ LSM-KV/
 │   ├── test_compaction.cpp
 │   └── test_lsm_engine.cpp
 ├── doc/               # 文档
-│   ├── PLAN.md
-│   ├── NOTES.md
-│   └── s0/            # S0 阶段实现指南
-│       ├── memtable_impl_guide.md
-│       ├── sstable_builder_impl_guide.md
-│       ├── vlog_impl_guide.md
-│       └── lsm_engine_impl_guide.md
+│   ├── PLAN.md        # 完整规划（6 个 Stage）
+│   ├── NOTES.md       # 学习笔记
+│   ├── s0/            # S0 实现指南
+│   │   ├── memtable_impl_guide.md
+│   │   ├── sstable_builder_impl_guide.md
+│   │   ├── vlog_impl_guide.md
+│   │   └── lsm_engine_impl_guide.md
+│   └── s1/            # S1 计划
+│       └── PLAN.md
 └── CMakeLists.txt
 ```
 
 ## 开发阶段
 
 ```bash
-# 记录版本
-git tag -a v0.1.0-s0-skeleton -m "Stage 0 完成：工程骨架 + 58 测试全绿"
+# 当前版本
+git tag -a v0.2.0-s1-engine -m "Stage 1 完成：SSTable/VLog 持久化 + 引擎 flush/read，61 测试全绿"
 
 # 推送到远端
 git push origin main --tags
 
 # 开始新阶段
-git checkout -b feature/stage1-xxx
+git checkout -b feature/stage2-compaction
 ```
 
 ## 编译选项

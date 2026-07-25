@@ -12,6 +12,7 @@
 //                          under state_mutex_.
 // -----------------------------------------------------------------------------
 #include "lsm_engine.h"
+#include "sstable_builder.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -54,11 +55,58 @@ Status LsmEngine::put(KeyView key, ValueView value) {
 
 std::optional<Value> LsmEngine::get(KeyView key) {
     auto snap = snapshot();
+    // Check memtables (newest first)
     auto v = snap->active_memtable->get(key);
     if (v.has_value()) return v;
     for (auto& im : snap->immutable_memtables) {
         v = im->get(key);
         if (v.has_value()) return v;
+    }
+    // Check L0 SSTables (newest first)
+    for (auto sst_id : snap->l0_sstables) {
+        auto it = snap->sstables.find(sst_id);
+        if (it == snap->sstables.end()) continue;
+        auto const& tbl = it->second;
+        if (!tbl->may_contain(key)) continue;
+        auto blk = tbl->find_block_idx(key);
+        if (blk >= tbl->num_blocks()) continue;
+        std::string raw;
+        auto s = tbl->read_block(blk, raw);
+        if (!s.ok()) continue;
+        std::size_t count = 0;
+        std::vector<std::pair<Key, Value>> entries;
+        // inline decode
+        if (raw.size() < 4) continue;
+        auto read_u32 = [](const char* p) -> std::uint32_t {
+            return static_cast<unsigned char>(p[0]) |
+                   (static_cast<unsigned char>(p[1]) << 8) |
+                   (static_cast<unsigned char>(p[2]) << 16) |
+                   (static_cast<unsigned char>(p[3]) << 24);
+        };
+        auto read_u16 = [](const char* p) -> std::uint16_t {
+            return static_cast<unsigned char>(p[0]) |
+                   (static_cast<unsigned char>(p[1]) << 8);
+        };
+        count = read_u32(raw.data());
+        std::size_t pos = 4;
+        for (std::size_t j = 0; j < count; ++j) {
+            if (pos + 2 > raw.size()) break;
+            auto klen = read_u16(raw.data() + pos);
+            pos += 2;
+            if (pos + klen > raw.size()) break;
+            Key k{raw.substr(pos, klen)};
+            pos += klen;
+            if (pos + 4 > raw.size()) break;
+            auto vlen = read_u32(raw.data() + pos);
+            pos += 4;
+            if (pos + vlen > raw.size()) break;
+            Value val{raw.substr(pos, vlen)};
+            pos += vlen;
+            if (k == key) {
+                if (val.empty()) return std::nullopt; // tombstone
+                return val;
+            }
+        }
     }
     return std::nullopt;
 }
@@ -94,7 +142,23 @@ Status LsmEngine::force_flush_next_imm_memtable(std::uint64_t& new_sst_id) {
     }
     auto back = state_->immutable_memtables.back();
     new_sst_id = back->id();
+
+    // Build SSTable from immutable memtable
+    SSTableBuilder builder(options_.block_size_bytes, options_.bloom_filter_enabled);
+    auto it = back->scan("", "\xff\xff\xff\xff\xff");
+    while (it->is_valid()) {
+        builder.add(it->key(), it->value());
+        it->next();
+    }
+
+    auto sst_path = options_.base_dir / (std::to_string(new_sst_id) + ".sst");
+    std::unique_ptr<SSTable> tbl;
+    auto s = builder.finish(new_sst_id, sst_path, tbl);
+    if (!s.ok()) return s;
+
     state_->immutable_memtables.pop_back();
+    state_->l0_sstables.insert(state_->l0_sstables.begin(), new_sst_id);
+    state_->sstables[new_sst_id] = std::move(tbl);
     return Status::OK();
 }
 
