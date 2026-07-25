@@ -9,6 +9,8 @@ set(LSM_TEST_FILES
     test_vlog.cpp
     test_iterator.cpp
     test_compaction.cpp
+    test_manifest.cpp
+    test_wal.cpp
     test_lsm_engine.cpp)
 
 foreach(test_file ${LSM_TEST_FILES})

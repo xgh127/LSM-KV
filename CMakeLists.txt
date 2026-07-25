@@ -65,6 +65,8 @@ add_library(mini_lsm STATIC
     src/vlog.cpp
     src/compaction.cpp
     src/iterator.cpp
+    src/manifest.cpp
+    src/wal.cpp
     src/lsm_engine.cpp)
 
 target_include_directories(mini_lsm PUBLIC

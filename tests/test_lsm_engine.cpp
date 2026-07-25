@@ -247,6 +247,71 @@ TEST(LsmEngine, FlushPersistsThenGetReadsFromSst) {
     EXPECT_TRUE(std::filesystem::exists(sst_path));
 }
 
+// ---- S2 persistence: WAL recovery after restart --------------------------
+TEST(LsmEngine, WALRecoveryAfterRestore) {
+    auto o = opts_with_temp_dir("WALRecoveryAfterRestore");
+    {
+        LsmEngine e(o);
+        e.open();
+        e.put("k1", "v1");
+        e.put("k2", "v2");
+        // close without flush — WAL should persist
+    }
+    // Re-open: engine recovers from WAL
+    LsmEngine e2(o);
+    e2.open();
+    EXPECT_EQ(*e2.get("k1"), "v1");
+    EXPECT_EQ(*e2.get("k2"), "v2");
+}
+
+TEST(LsmEngine, ManifestRecoveryAfterFlushAndRestart) {
+    auto o = opts_with_temp_dir("ManifestRecoveryAfterFlushAndRestart");
+    {
+        LsmEngine e(o);
+        e.open();
+        e.put("a", "1");
+        e.force_freeze_memtable();
+        std::uint64_t sid = 0;
+        e.force_flush_next_imm_memtable(sid);
+        EXPECT_GT(sid, 0u);
+    }
+    // Re-open: engine recovers SSTable from Manifest
+    {
+        LsmEngine e(o);
+        e.open();
+        EXPECT_EQ(*e.get("a"), "1");
+    }
+}
+
+TEST(LsmEngine, FullPersistenceRoundTrip) {
+    auto o = opts_with_temp_dir("FullPersistenceRoundTrip");
+    {
+        LsmEngine e(o);
+        e.open();
+        e.put("persist", "me");
+        e.force_freeze_memtable();
+        std::uint64_t sid = 0;
+        e.force_flush_next_imm_memtable(sid);
+    }
+    // Second lifecycle: open, read, write more, close
+    {
+        LsmEngine e(o);
+        e.open();
+        EXPECT_EQ(*e.get("persist"), "me");
+        e.put("more", "data");
+        e.force_freeze_memtable();
+        std::uint64_t sid = 0;
+        e.force_flush_next_imm_memtable(sid);
+    }
+    // Third: verify both keys survive
+    {
+        LsmEngine e(o);
+        e.open();
+        EXPECT_EQ(*e.get("persist"), "me");
+        EXPECT_EQ(*e.get("more"), "data");
+    }
+}
+
 // ---- Background thread lifecycle ------------------------------------------
 TEST(LsmEngine, StartStopFlushThreadIdempotent) {
     auto o = opts_with_temp_dir("StartStopFlushThreadIdempotent");

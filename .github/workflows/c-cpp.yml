@@ -9,10 +9,6 @@ on:
 jobs:
   build-ubuntu:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: LSM-KV
-
     steps:
     - uses: actions/checkout@v4
 
@@ -30,10 +26,6 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: LSM-KV
-
     steps:
     - uses: actions/checkout@v4
 

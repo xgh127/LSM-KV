@@ -20,10 +20,12 @@
 
 #include "compaction.h"
 #include "config.h"
+#include "manifest.h"
 #include "memtable.h"
 #include "sstable.h"
 #include "types.h"
 #include "vlog.h"
+#include "wal.h"
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -97,8 +99,8 @@ public:
     // the resulting SSTable. Returns the new SSTable id (zero = none flushed).
     Status force_flush_next_imm_memtable(std::uint64_t& new_sst_id);
 
-    // Manually trigger one compaction cycle (S2+). S0 returns kNotSupported.
-    Status force_full_compaction() { return Status::NotSupported("S0 skeleton has no compaction yet"); }
+    // Manually trigger one compaction cycle (S2+).
+    Status force_full_compaction();
 
     // Reset: drop all in-memory state AND remove all files under base_dir.
     // Useful for tests between scenarios. Caller is expected to call this
@@ -130,6 +132,8 @@ private:
     std::unique_ptr<CompactionController>   controller_;
     std::unique_ptr<CompactionExecutor>     executor_;
     VLog                                     vlog_;
+    Manifest                                 manifest_;
+    WAL                                      wal_;
     std::unique_ptr<std::thread>            flush_thread_;   // S2+
 };
 

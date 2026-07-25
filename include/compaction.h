@@ -92,4 +92,21 @@ public:
                    std::vector<std::uint64_t>&) override;
 };
 
+// S2: Full compaction (L0 → L1) --------------------------------------------
+class FullCompactionController : public CompactionController {
+public:
+    explicit FullCompactionController(std::size_t l0_trigger);
+
+    std::optional<CompactionTask> pick_task(const LsmEngine& engine) const override;
+
+private:
+    std::size_t l0_trigger_;
+};
+
+class FullCompactionExecutor : public CompactionExecutor {
+public:
+    Status execute(const CompactionTask& task, LsmEngine& engine,
+                   std::vector<std::uint64_t>& new_sst_ids) override;
+};
+
 } // namespace mini_lsm
